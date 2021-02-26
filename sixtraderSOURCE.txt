@@ -1,0 +1,685 @@
+using System;
+using System.Linq;
+using System.Threading;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+using cAlgo.API.Internals;
+using cAlgo.Indicators;
+
+
+namespace cAlgo.Robots
+{
+    [Robot(TimeZone = TimeZones.UTC)]
+    public class MethodBotTESTING : Robot
+    {
+
+        [Parameter("Maximum Range for Trade (in pips) between Current Bar Position & Current SMA20 Position", DefaultValue = 0.0015)]
+        public double range { get; set; }
+        // RANGE TO TWEAK FOR DIFFERENCE IN PIPS BETWEEN CURRENT POSITION AND SMA20 - default is 0.0015 - this yeilds 2% eq total
+        [Parameter("Minimum amount of pips required to move between previous SMA20 pos and current SMA20 pos to be able to trade", DefaultValue = 0.0015)]
+        public double SMArange { get; set; }
+        // RANGE TO TWEAK FOR AMOUNT OF TREND MOVEMENT REQUIRED BETWEEN 2 POINTS ON SMA20 - default is 0.0015 - this yields 2% eq total
+        [Parameter("Maximum amount of spread allowed before trading stops", DefaultValue = 5E-05)]
+        public double spreadMax { get; set; }
+
+        [Parameter("Minimum trend value (last 5 SMA20 points)", DefaultValue = 1)]
+        public double SMAtrend5 { get; set; }
+
+        [Parameter("Take profit position distance (this is a multiply value)", DefaultValue = 2.5)]
+        public double timesTemp { get; set; }
+
+        [Parameter("Trading Time Start in 1-24 format 8 = 8am", DefaultValue = 8)]
+        public int startTime { get; set; }
+
+        [Parameter("Trading Time End in 1-24 format 17 = 5pm", DefaultValue = 17)]
+        public int endTime { get; set; }
+
+        [Parameter("Updated Stop Loss Position", DefaultValue = 0.68)]
+        public double stopLossVal { get; set; }
+
+        [Parameter("RISK", DefaultValue = 5)]
+        public int risk { get; set; }
+
+        public int b;
+        public int s;
+
+        private bool prevredbar;
+        private bool prevgreenbar;
+
+        public bool newbarcheck;
+        public bool notstartcheck;
+
+        private double stoplossvarBuy;
+        private double takeprofitvarBuy;
+        private double stoplossvarSell;
+        private double takeprofitvarSell;
+        private double Balance;
+        private double currentlocalSell;
+        private double currentlocalBuy;
+
+        private double[] BstoreStopPos;
+        private double[] BstoreEntryPos;
+        private double[] BstoreCurrPos;
+
+        private double[] SstoreStopPos;
+        private double[] SstoreEntryPos;
+        private double[] SstoreCurrPos;
+
+        private TradeResult resultBuy;
+        private TradeResult resultSell;
+
+        private SimpleMovingAverage _sma20;
+        private SimpleMovingAverage _sma200;
+
+        public Position positionBuy;
+        public Position positionSell;
+
+
+        double sum;
+        double SMAsum;
+        double temp;
+
+
+
+        protected override void OnStart()
+        {
+            _sma20 = Indicators.SimpleMovingAverage(Bars.ClosePrices, 20);
+            _sma200 = Indicators.SimpleMovingAverage(Bars.ClosePrices, 200);
+            notstartcheck = false;
+        }
+
+        private long LotSizingFunctionBuy()
+        {
+            var tempbalB = ((Balance * risk) / ((Bars.ClosePrices.Last(0) - Bars.LowPrices.Last(1)) * 100));
+            var normalValue = Symbol.NormalizeVolume(tempbalB);
+            return normalValue;
+        }
+
+        private long LotSizingFunctionSell()
+        {
+            var tempbalS = ((Balance * risk) / ((Bars.HighPrices.Last(1) - Bars.ClosePrices.Last(0)) * 100));
+            var normalValue = Symbol.NormalizeVolume(tempbalS);
+            return normalValue;
+        }
+
+
+        private bool trendSMA()// --------------------------------------------------------------------------------------------------SMA TREND 
+        {
+            double pip1 = (_sma20.Result.Last(0));
+            double pip2 = (_sma20.Result.Last(1));
+            double pip3 = (_sma20.Result.Last(2));
+            double pip4 = (_sma20.Result.Last(3));
+            double pip5 = (_sma20.Result.Last(4));
+            double pip6 = (_sma20.Result.Last(5));
+            double pip7 = (_sma20.Result.Last(6));
+            double pip8 = (_sma20.Result.Last(7));
+            double pip9 = (_sma20.Result.Last(8));
+            double pip10 = (_sma20.Result.Last(9));
+
+            double result5 = ((pip1 + pip2 + pip3 + pip4 + pip5) / 5);
+            double result10 = ((pip1 + pip2 + pip3 + pip4 + pip5 + pip6 + pip7 + pip8 + pip9 + pip10) / 10);
+            
+            temp = result5;
+            
+            if (result5 < 0)
+            {
+                temp = result5 * -1;
+            }
+            
+            if (temp >= SMAtrend5)
+            {
+                return true;
+            }
+            
+            return false;
+        }
+
+
+        
+        private bool CheckWithinRange(double x, double y, double range) // CALCULATING CURRENT RANGE IN PIPS BETWEEN CURRENT BAR CLOSE VALUE AND SMA20
+        {
+            sum = (x - y);
+
+            if ((x - y) < 0)// HANDLES NEGATIVE NUMBERS
+            {
+                sum = (x - y) * -1;
+            }
+            
+            if ((x - y) == 0)// HANDLES 0
+            {
+                sum = 1E-11;
+            }
+
+            if (sum <= range)// IF DISTANCE BETWEEN CURRENT BAR CLOSE AND SMA20 IS LESS THAN RANGE
+            {
+                return true;
+            }
+
+            return false;// IF DISTANCE BETWEEN CURRENT BAR CLOSE AND SMA20 IS NOT LESS THAN RANGE
+        }
+
+
+        
+        private bool CheckWithinRangeSMA(double a, double c, double SMArange) // CALCULATING THE MOVEMENT IN PIPS BETWEEN LAST SMA20 AND CURRENT
+        {
+            SMAsum = (c - a);
+
+            if ((SMAsum) < 0)// HANDLES NEGATIVE NUMBERS
+            {
+                SMAsum = ((SMAsum) * (-1));
+            }
+
+            
+            if ((SMAsum) == 0)// HANDLES 0
+            {
+                SMAsum = 0;
+            }
+
+            if (SMAsum >= SMArange)// IF DISTANCE BETWEEN LAST SMA20 AND CURRENT SMA20 IS HIGHER THAN RANGE 
+            {
+                return true;
+            }
+            
+            else
+            {
+                return false;
+            }
+            
+        }
+
+
+
+        // SORTS ASSIGNMENT OF ARRAY 
+        private void assigningArray()
+        {
+
+            Print("INSIDE ASSIGNING ARRAY");
+
+            var Barrayfind = Positions.Find("order 1", Symbol);
+            var Sarrayfind = Positions.Find("order 2", Symbol);
+
+            if (b != 0)// IF INCREMENT IS NOT EQUAL TO 0
+            {
+                if (Barrayfind == null)
+                {
+                }
+
+                if (Barrayfind != null)// IF CAN FIND ORDER
+                {
+                    BstoreStopPos = new double[100000];
+                    BstoreEntryPos = new double[100000];
+                    BstoreCurrPos = new double[100000];
+
+                    BstoreStopPos[b] = Barrayfind.StopLoss.Value;
+                    BstoreEntryPos[b] = Barrayfind.EntryPrice;
+                    BstoreCurrPos[b] = Bars.ClosePrices.Last(0);
+
+                    Print("1D Stored Entry Position ", BstoreEntryPos[b]);
+                    Print("1D Stored Current Position ", BstoreCurrPos);
+                    Print("1D Stored StopLoss Position ", BstoreStopPos[b]);
+                    return;
+                }
+            }
+
+            if (s != 0)// IF INCREMENT IS NOT EQUAL TO 0 
+            {
+                if (Sarrayfind == null)// IF CANNOT FIND ORDER
+                {
+                }
+
+                if (Sarrayfind != null)// IF CAN FIND ORDER
+                {
+                    SstoreStopPos = new double[100000];
+                    SstoreEntryPos = new double[100000];
+                    SstoreCurrPos = new double[100000];
+
+                    SstoreStopPos[s] = Sarrayfind.StopLoss.Value;
+                    SstoreEntryPos[s] = Sarrayfind.EntryPrice;
+                    SstoreCurrPos[s] = Bars.ClosePrices.Last(0);
+
+                    Print("1S Stored Entry Position ", SstoreEntryPos[s]);
+                    Print("1S Stored Current Position ", SstoreCurrPos[s]);
+                    Print("1S Stored StopLoss Position ", SstoreStopPos[s]);
+                    return;
+                }
+            }
+        }
+
+
+
+        // CHECKS TO SET STOP LOSS ON EVERYTICK IF CONDITIONS ARE MET  ------------------------------------------------------------STOP LOSS
+        private void settingStopLoss()
+        {
+            var Bposition = Positions.Find("order 1", Symbol);
+            var Sposition = Positions.Find("order 2", Symbol);
+
+            if (b != 0)// IF INCREMENT IS NOT EQUAL TO 0
+            {
+                if (Bposition == null)// IF ORDER DOES NOT EXIST
+                {
+                }
+                // IF ORDER DOES EXIST
+                if (Bposition != null)
+                {
+                    //3
+                    double BEntryPosT = BstoreEntryPos[b] - Symbol.Spread;
+                    double BStopPosT = BstoreStopPos[b];
+
+                    if (Bars.ClosePrices.Last(0) >= ((BEntryPosT - BStopPosT) + BEntryPosT))
+                    {
+                        //4
+                        if (Bposition.TradeType == TradeType.Buy)
+                        {
+                            //5
+                            Print("UPDATING BUY TRADE STOP LOSS");
+
+                            double BStopPos = BstoreStopPos[b];
+                            double BCurrPos = BstoreCurrPos[b];
+                            double BEntryPos = BstoreEntryPos[b] - Symbol.Spread;
+                            double BbuySum = (BCurrPos + ((BEntryPos - BStopPos) * stopLossVal));
+
+                            Print("1A Current STORED Stop Loss:  ", BStopPos);
+                            Print("1A Current STORED Position: ", BCurrPos);
+                            Print("1A Order STORED Entry Price: ", BEntryPos);
+                            Print("1A Calculation: ", BbuySum);
+                            Print("1A Current Position: ", Bars.ClosePrices.Last(0));
+                            if (BbuySum == Bposition.StopLoss)
+                            {
+                                Print("1A this is where it tried to stop from");
+                                return;
+                            }
+
+                            ModifyPosition(Bposition, BbuySum, Bposition.TakeProfit.Value);
+                            return;
+
+                        }
+                        //5
+                    }
+                    //4
+                }
+                //3 
+            }
+            //1
+
+
+
+            // IF INCREMENT IS NOT EQUAL TO 0
+            if (s != 0)
+            {
+                //1
+
+                // IF ORDER DOES NOT EXIST
+                if (Sposition == null)
+                {
+                    //2
+                }
+                //2
+                // IF ORDER DOES EXIST
+                if (Sposition != null)
+                {
+                    //3 
+                    double SStopPosT = SstoreStopPos[s];
+                    double SEntryPosT = SstoreEntryPos[s] - Symbol.Spread;
+                    Print("TRYING TO MODIFY STOP LOSS SELL");
+                    // CURRENT BAR POSITION IS SMALLER THAN (CURRENT ENTRY - CURRENT STOP LOSS) + CURRENT ENTRY
+                    if (Bars.ClosePrices.Last(0) <= ((SEntryPosT - SStopPosT) + SEntryPosT))
+                    {
+                        //4 CHANGE THIS ^^
+                        Print("SUCCESSFULLY MODIFIED STOP LOSS SELL");
+                        if (Sposition.TradeType == TradeType.Sell)
+                        {
+                            //5
+                            double SStopPos = SstoreStopPos[s];
+                            double SCurrPos = SstoreCurrPos[s];
+                            double SEntryPos = SstoreEntryPos[s] - Symbol.Spread;
+                            double SbuySum = (SCurrPos + ((SEntryPos - SStopPos) * stopLossVal));
+
+                            Print("1A Current Stop Loss:  ", SStopPos);
+                            Print("1A Current Position: ", SCurrPos);
+                            Print("1A Order Entry Price: ", SEntryPos);
+                            Print("1A Calculation: ", SbuySum);
+
+                            if (SbuySum == Sposition.StopLoss.Value)
+                            {
+                                Print("1A Deez Nuts");
+                                return;
+                            }
+                            ModifyPosition(Sposition, SbuySum, Sposition.TakeProfit.Value);
+                            return;
+                        }
+                        //5
+                    }
+                    //4
+                }
+                //3    
+            }
+            //1
+        }
+
+        private void printErrorHandles()
+        {
+
+            // IF SMA20 TREND IS GOING UP
+            if (_sma20.Result.Last(0) > _sma20.Result.Last(1))
+            {
+
+                Print("SMA GOING UP");
+
+            }
+
+            // IF SMA20 TREND IS GOING DOWN
+            if (_sma20.Result.Last(0) < _sma20.Result.Last(1))
+            {
+
+                Print("SMA GOING DOWN");
+
+            }
+
+            // IF CURRENT BAR CLOSE IS ABOVE SMA200
+            if (_sma200.Result.Last(0) < Bars.ClosePrices.Last(0))
+            {
+
+                Print("Currently setting BUY orders only!");
+
+            }
+
+            // IF CURRENT BAR CLOSE IS NOT ABOVE SMA200
+            else
+            {
+
+                Print("Currently setting SELL orders only!");
+
+            }
+
+
+
+        }
+
+
+
+
+
+
+        // -------------------------------------------------------------------------------------------------------- ON TICK ----------------------------
+        protected override void OnTick()
+        {
+            /*Print("If this ",this.Symbol.Ask," is below ", spreadMax, "then trading can take place.");
+            Print("SMARange: ",SMArange);
+            Print("Range: ", range);
+            Print("Spread Max: ",spreadMax); */
+            // CHECKS IF CURRENT PROGRESS IS 1 BAR AHEAD OF STARTING TIME
+            if (notstartcheck != false)
+            {
+
+                settingStopLoss();
+                // TRYING TO MODIFY THE STOPLOSS HERE
+
+            }
+
+            if (Server.Time.Hour >= startTime && Server.Time.Hour < endTime)
+            {
+                if (Symbol.Spread <= spreadMax || Symbol.Spread == 0)
+                {
+
+                    double x = (Bars.ClosePrices.Last(0));
+                    double y = (_sma20.Result.Last(0));
+
+                    double a = (_sma20.Result.Last(0));
+                    double c = (_sma20.Result.Last(1));
+
+
+
+
+                    // UPDATES ACCOUNT BALANCE FOR VARIABLES
+
+
+
+
+
+
+
+                                        /*if(CheckWithinRangeSMA(a, c, SMArange)) // CHECK FOR SMA20 RANGE = TRUE
+            {
+            
+                Print("The current distance between entry and SMA20 ARE available to trade!");
+            
+            }
+            
+            else // IF CHECK FOR SMA20 RANGE = FALSE
+            {
+            
+                Print("The current distance between entry and SMA20 are NOT available to trade!");
+            
+            }
+            
+                Print("Current SMA20 Value.", _sma20.Result.Last(0));
+            
+                Print("Current SMA20 Pip Range Difference can be - or ", (_sma20.Result.Last(0) - (_sma20.Result.Last(1))));
+            
+                Print("Range between entry pos and SMA 20 is ok to trade? : ", CheckWithinRange(x, y, range));
+
+                Print("Range between last and current SMA20 points is steep enough to trade? :", CheckWithinRangeSMA(a, c, SMArange));*/
+
+
+
+                    //CHECKS IF PREVIOUS BAR IS RED BAR
+if (Bars.ClosePrices.Last(2) > Bars.ClosePrices.Last(1))
+                    {
+                        prevredbar = true;
+                    }
+
+                    // CHECKS IF PREVIOUS BAR IS RED BAR
+                    if (Bars.ClosePrices.Last(2) < Bars.ClosePrices.Last(1))
+                    {
+                        prevredbar = false;
+                    }
+
+                    // IF LAST BAR IS RED BAR 
+                    if (prevredbar == true)
+                    {
+
+                        //  IF BARS CURRENT PRICE IS HIGHER THAN LAST BAR'S HIGHEST PRICE 
+                        if (Bars.HighPrices.Last(1) < Bars.ClosePrices.Last(0))
+                        {
+
+
+                            // IF CURRENT BAR POS IS HIGHER THAN SMA200
+                            //if (_sma200.Result.Last(0) < Bars.ClosePrices.Last(0))
+                            //{
+
+                                // IF SMA20 IS GOING UP IN TREND AND NOT DOWN
+                                if (_sma20.Result.Last(0) > _sma20.Result.Last(1))
+                                {
+                                    if (Bars.LowPrices.Last(0) > Bars.LowPrices.Last(1))
+                                    {
+                                        //current bar lowest is higher than previous bar lowest
+                                        if (trendSMA())
+                                        {
+                                            // IF CURRENT BAR POSITION IS WITHIN SET PIP DISTANCE OF SMA20
+                                            if (CheckWithinRange(x, y, range))
+                                            {
+
+                                                // IF CURRENT SMA20 PIP DIFFERENCE IS ENOUGH TREND TO ALLOW FOR TRADE
+                                                if (CheckWithinRangeSMA(a, c, SMArange))
+                                                {
+                                                    if ((Bars.ClosePrices.Last(0)) >= Bars.HighPrices.Last(1))
+                                                    {
+                                                        if ((Bars.ClosePrices.Last(0)) <= (Bars.HighPrices.Last(1) + 5E-05))
+                                                        {
+
+                                                            // IF IT IS NEW BAR
+                                                            if (newbarcheck != false)
+                                                            {
+
+
+                                                                takeprofitvarBuy = (((Bars.ClosePrices.Last(0) - Bars.LowPrices.Last(1)) * timesTemp) + Bars.ClosePrices.Last(0));
+
+
+
+                                                                stoplossvarBuy = (Bars.LowPrices.Last(1));
+                                                                currentlocalBuy = (Bars.ClosePrices.Last(0));
+
+                                                                resultBuy = ExecuteMarketOrder(TradeType.Buy, Symbol, LotSizingFunctionBuy(), "order 1", 10, 10);
+
+                                                                Print("SUCCESS! BUY");
+
+                                                                positionBuy = resultBuy.Position;
+
+
+                                                                b++;
+                                                                Print("b= ", b);
+
+
+
+
+                                                                ModifyPosition(positionBuy, stoplossvarBuy, takeprofitvarBuy);
+                                                                assigningArray();
+                                                                newbarcheck = false;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            //}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    //------------------------- BUY ----------------------
+
+
+
+
+
+
+
+
+
+
+                    // IF PREVIOUS BAR IS A GREEN BAR
+                    if (Bars.ClosePrices.Last(2) < Bars.ClosePrices.Last(1))
+                    {
+
+                        prevgreenbar = true;
+
+                    }
+
+                    // IF PREVIOUS BAR IS NOT A GREEN BAR
+                    if (Bars.ClosePrices.Last(2) > Bars.ClosePrices.Last(1))
+                    {
+
+                        prevgreenbar = false;
+
+                    }
+
+                    //IF PREVIOUS BAR IS GREEN BAR
+                    if (prevgreenbar == true)
+                    {
+
+                        // IF BARS CURRENT PRICE IS LOWER THAN LAST BARS LOWEST PRICE
+                        if (Bars.LowPrices.Last(1) > Bars.ClosePrices.Last(0))
+                        {
+
+                            // IF BARS CURRENT PRICE IS LOWER THAN THE SMA200 
+                            //if (_sma200.Result.Last(0) > Bars.ClosePrices.Last(0))
+                            //{
+
+                                // IF SMA20 TREND IS ENOUGH FOR TRADE TO GO
+                                if (_sma20.Result.Last(0) < _sma20.Result.Last(1))
+                                {
+                                    if (Bars.HighPrices.Last(0) < Bars.HighPrices.Last(1))
+                                    {
+                                        //current bar highest is lower than last bar highest
+                                        if (trendSMA())
+                                        {
+                                            if (CheckWithinRange(x, y, range))
+                                            {
+
+                                                if (CheckWithinRangeSMA(a, c, SMArange))
+                                                {
+                                                    // IF IT IS NEW BAR
+                                                    if (newbarcheck != false)
+                                                    {
+                                                        if ((Bars.ClosePrices.Last(0)) <= Bars.LowPrices.Last(1))
+                                                        {
+                                                            // IF CURRENT BAR VALUE IN PIPS IS LESS THAN OR EQUAL TO PREVIOUS BARS LOWEST VALUE
+                                                            if ((Bars.ClosePrices.Last(0)) >= (Bars.LowPrices.Last(1) - 5E-05))
+                                                            {
+                                                                // IF CURRENT BAR VALUE IN PIPS IS GREATER THAN OR EQUAL TO PREVIOUS BARS LOWEST VALUE - 0.0002
+                                                                stoplossvarSell = (Bars.HighPrices.Last(1));
+                                                                takeprofitvarSell = (((Bars.ClosePrices.Last(0) - Bars.HighPrices.Last(1)) * timesTemp) + Bars.ClosePrices.Last(0));
+                                                                currentlocalSell = (Bars.ClosePrices.Last(0));
+                                                                /*tempbalS = ((Balance * 5) / Bars.HighPrices.Last(1));
+                                        int tempbalLongS = (int)tempbalB;*/
+
+
+                                                                resultSell = ExecuteMarketOrder(TradeType.Sell, Symbol, LotSizingFunctionSell(), "order 2", 10, 10);
+
+                                                                positionSell = resultSell.Position;
+
+                                                                Print("SUCCESS! SELL");
+                                                                s++;
+                                                                Print("s=", s);
+
+
+
+                                                                ModifyPosition(positionSell, stoplossvarSell, takeprofitvarSell);
+                                                                assigningArray();
+
+                                                                newbarcheck = false;
+                                                            }
+
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        //}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                //----------------------------- SELL --------------------------
+            }
+        }
+
+
+        protected override void OnBar()
+        {
+            Balance = Account.Balance;
+
+                        /*stoplossvarSell = (Bars.HighPrices.Last(1));
+            stoplossvarBuy = (Bars.LowPrices.Last(1));
+            currentlocalBuy = (Bars.ClosePrices.Last(0));
+            tempbalB = ((Balance * 5) / ((currentlocalBuy - stoplossvarBuy)*100));
+            tempbalB = ((Balance * 5) / Bars.LowPrices.Last(1));
+            long tempbalLongB = (long) tempbalB;
+             
+            Print("Tempbal if BUY: ", tempbalLongB);
+            
+            stoplossvarSell = (Bars.HighPrices.Last(1));
+            currentlocalSell = (Bars.ClosePrices.Last(0));
+            tempbalS = ((Balance * 5) / ((currentlocalSell - stoplossvarSell)*100));
+            tempbalS = ((Balance * 5) / Bars.HighPrices.Last(1));
+            long tempbalLongS = (long)tempbalS;*/
+
+            //Print("Tempbal if SELL: ", tempbalLongS);
+
+newbarcheck = true;
+            notstartcheck = true;
+
+            //Print("Current SMA 20 Value: ", _sma20.Result.LastValue);
+            //Print("Current SMA 200 Value: ", _sma200.Result.LastValue);
+
+        }
+
+
+
+        protected override void OnStop()
+        {
+            Print("Successfully Stopped Bot.");
+        }
+    }
+}
